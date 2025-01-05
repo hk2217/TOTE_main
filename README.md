@@ -1,4 +1,3 @@
-# TOTE_main
 # [TeMME: Temporal Knowledge Graph Completion using Multi-grade Multivector Embeddings]
 
 ## Installation
