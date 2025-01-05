@@ -5,6 +5,7 @@ import math
 import torch
 from torch import nn
 import numpy as np
+from layer import *
 
 
 class TKBCModel(nn.Module, ABC):
@@ -136,273 +137,230 @@ class TKBCModel(nn.Module, ABC):
 
 
 
-
-
-
-class TOTE(TKBCModel):
-    """2nd-grade Temporal Knowledge Graph Embeddings using Geometric Algebra
-
-        :::     Scoring function: <h, r, t_conjugate, T>
-        :::     2-grade multivector = scalar + Imaginary * e_1 + Imaginary * e_2 + Imaginary * e_3 + Imaginary * e_12
-
-    """
+class TeMME(TKBCModel):
     def __init__(
             self, sizes: Tuple[int, int, int, int], rank: int,
-            no_time_emb=False, init_size: float = 1e-2, time_granularity: int = 1,
-	    pre_train: bool = True
-):
-        super(TOTE, self).__init__()
+            no_time_emb=False, init_size: float = 1e-2, time_granularity: int = 1
+    ):
+        super(TeMME, self).__init__()
         self.sizes = sizes
         self.rank = rank
-        self.rank_static = rank // 2
-        self.W = nn.Embedding(4*rank,1,sparse=True)
-        self.W.weight.data *= 0
 
         self.embeddings = nn.ModuleList([
+            nn.Embedding(s, 2 * rank, sparse=True)
+            for s in [sizes[0], sizes[1], sizes[3], sizes[1]]  # last embedding modules contains no_time embeddings
+        ])
+        
+        self.r_t_embeddings = nn.ModuleList([
             nn.Embedding(s, 4 * rank, sparse=True)
-            for s in [sizes[0], sizes[1], sizes[3]] # without no_time_emb
+            for s in [sizes[0], sizes[1], sizes[3], sizes[1]]  # last embedding modules contains no_time embeddings
         ])
-        self.static_embeddings = nn.ModuleList([
-            nn.Embedding(s, 2 * self.rank_static, sparse=True)
-            for s in [sizes[0], sizes[1]]
-        ])
+        
         self.embeddings[0].weight.data *= init_size
         self.embeddings[1].weight.data *= init_size
         self.embeddings[2].weight.data *= init_size
-        self.static_embeddings[0].weight.data *= init_size     # static entity embedding
-        self.static_embeddings[1].weight.data *= init_size
-        
-        self.pre_train = pre_train
-	
-        if self.pre_train:
-            self.embeddings[0].weight.data[:,self.rank:self.rank*3] *= 0
-      #      self.embeddings[1].weight.data[:,self.rank:self.rank*3] *= 0
-      #      self.embeddings[2].weight.data[:,self.rank:self.rank*3] *= 0
-        
+        self.embeddings[3].weight.data *= init_size
 
         self.no_time_emb = no_time_emb
-
         self.time_granularity = time_granularity
+        
+        self.W = nn.Embedding(2*rank,1,sparse=True)
+        self.W.weight.data *= 0
 
     @staticmethod
     def has_time():
         return True
-	
 
     def score(self, x):
-
         lhs = self.embeddings[0](x[:, 0])
-        rel = self.embeddings[1](x[:, 1])
+        rel_o = self.embeddings[1](x[:, 1])
+        time_o = self.embeddings[2](x[:, 3])
+        rel_no_time = self.embeddings[3](x[:, 1])
         rhs = self.embeddings[0](x[:, 2])
-        time = self.embeddings[2](x[:, 3] // self.time_granularity) 
-        #print(lhs)
-        lhs = lhs[:, :self.rank], lhs[:, self.rank:self.rank*2], lhs[:, self.rank*2:self.rank*3], lhs[:, self.rank*3:]
+        
+        rel = self.r_t_embeddings[1](x[:, 1])
+        time = self.r_t_embeddings[2](x[:, 3])
+        
+
+        lhs = lhs[:, :self.rank], lhs[:, self.rank:]
+        rel_o = rel_o[:, :self.rank], rel_o[:, self.rank:]
+        rhs = rhs[:, :self.rank], rhs[:, self.rank:]
+        time_o = time_o[:, :self.rank], time_o[:, self.rank:]
+        
         rel = rel[:, :self.rank], rel[:, self.rank:self.rank*2], rel[:, self.rank*2:self.rank*3], rel[:, self.rank*3:]
-        rhs = rhs[:, :self.rank], rhs[:, self.rank:self.rank*2], rhs[:, self.rank*2:self.rank*3], rhs[:, self.rank*3:]
         time = time[:, :self.rank], time[:, self.rank:self.rank*2], time[:, self.rank*2:self.rank*3], time[:, self.rank*3:]
-        #print(lhs)
-        # h_static = self.static_embeddings[0](x[:, 0])
-        # r_static = self.static_embeddings[1](x[:, 1])
-        # t_static = self.static_embeddings[0](x[:, 2])
+        rnt = rel_no_time[:, :self.rank], rel_no_time[:, self.rank:]
+        self.Mutan_MM_E = MutanLayer(self.rank, 2)
 
-        # h_static = h_static[:, :self.rank_static], h_static[:, self.rank_static:]
-        # r_static = r_static[:, :self.rank_static], r_static[:, self.rank_static:]
-        # t_static = t_static[:, :self.rank_static], t_static[:, self.rank_static:]
 
-	
-	
-	    ## compute <h, r, T, t_conj> ==> 4**3
-	    ## full_rel = r * time
         A =   rel[0]*time[0]+ rel[1]*time[1]+ rel[2]*time[2]- rel[3]*time[3] # scalar
         B =   rel[0]*time[1]+ rel[1]*time[0]- rel[2]*time[3]+ rel[3]*time[2] # e1
         C =   rel[0]*time[2]+ rel[2]*time[0]+ rel[1]*time[3]- rel[3]*time[1]  # e2
         D =   rel[1]*time[2]- rel[2]*time[1]+ rel[0]*time[3]+ rel[3]*time[0] # e1e2
-	    
-        full_rel = A,B,C,D
-	    ## h * full_rel, note that we do not change +- sign here, thus we need do that later
-        W =   lhs[0]*full_rel[0]+ lhs[1]*full_rel[1]+ lhs[2]*full_rel[2]- lhs[3]*full_rel[3] # scalar
-        X =   lhs[0]*full_rel[1]+ lhs[1]*full_rel[0]- lhs[2]*full_rel[3]+ lhs[3]*full_rel[2] # e1
-        Y =   lhs[0]*full_rel[2]+ lhs[2]*full_rel[0]+ lhs[1]*full_rel[3]- lhs[3]*full_rel[1]  # e2
-        Z =   lhs[1]*full_rel[2]- lhs[2]*full_rel[1]+ lhs[0]*full_rel[3]+ lhs[3]*full_rel[0] # e1e2
-	
-	
-	
+        rt = A,B,C,D
 
-        # return torch.sum(W*rhs[0] - X * rhs[1] - Y * rhs[2] + Z * rhs[3], 1, keepdim=True)+1*torch.sum(
-        #     (lhs[0] * full_rel[0] - lhs[1] * full_rel[1]) * rhs[0] +
-        #     (lhs[1] * full_rel[0] + lhs[0] * full_rel[1]) * rhs[1],
-        #     1, keepdim=True
-        # )
-        # return 
+        full_rel = (rt[0] - rt[3]) + rnt[0], (rt[1] + rt[2]) + rnt[1]
+        
+        rt_o = rel_o[0] * time_o[0], rel_o[1] * time_o[0], rel_o[0] * time_o[1], rel_o[1] * time_o[1]
+        full_rel_o = (rt_o[0] - rt_o[3]) + rnt[0], (rt_o[1] + rt_o[2]) + rnt[1]
 
         return torch.sum(
             (lhs[0] * full_rel[0] - lhs[1] * full_rel[1]) * rhs[0] +
-            (lhs[1] * full_rel[0] + lhs[0] * full_rel[1]) * rhs[1] +
-            (lhs[2] * full_rel[2] - lhs[3] * full_rel[3]) * rhs[2] +
-            (lhs[3] * full_rel[2] + lhs[2] * full_rel[3]) * rhs[3],
-            1, keepdim=True
-        )+1*torch.sum(
-            (lhs[0] * full_rel[0] - lhs[1] * full_rel[1]) * rhs[0] +
             (lhs[1] * full_rel[0] + lhs[0] * full_rel[1]) * rhs[1],
+            1, keepdim=True
+        )+torch.sum(
+            (lhs[0] * full_rel_o[0] - lhs[1] * full_rel_o[1]) * rhs[0] +
+            (lhs[1] * full_rel_o[0] + lhs[0] * full_rel_o[1]) * rhs[1],
             1, keepdim=True
         )
     
-	
-	
-	
+
+
     def pretrain(self, x):
         
         lhs = self.embeddings[0](x[:, 0])
-        rel = self.embeddings[1](x[:, 1])
+        rel_o = self.embeddings[1](x[:, 1])
+        time_o = self.embeddings[2](x[:, 3] // self.time_granularity)
         rhs = self.embeddings[0](x[:, 2])
-        time = self.embeddings[2](x[:, 3] // self.time_granularity)
+        
+        rel = self.r_t_embeddings[1](x[:, 1])
+        time = self.r_t_embeddings[2](x[:, 3] // self.time_granularity)
 
-        lhs = lhs[:, :self.rank], lhs[:, self.rank*3:]
-        rel = rel[:, :self.rank], rel[:, self.rank*3:]
-        rhs = rhs[:, :self.rank], rhs[:, self.rank*3:]
-        time = time[:, :self.rank], time[:, self.rank*3:]
-
-        to_score = self.embeddings[0].weight
-        to_score = to_score[:, :self.rank], to_score[:, self.rank*3:]
-
-        rt = rel[0] * time[0], rel[1] * time[0], rel[0] * time[1], rel[1] * time[1]
-        full_rel = rt[0] - rt[3], rt[1] + rt[2]
-
-        # h_static = self.static_embeddings[0](x[:, 0])
-        # r_static = self.static_embeddings[1](x[:, 1])
-        # t_static = self.static_embeddings[0](x[:, 2])
-
-        # h_static = h_static[:, :self.rank_static], h_static[:, self.rank_static:]
-        # r_static = r_static[:, :self.rank_static], r_static[:, self.rank_static:]
-        # t_static = t_static[:, :self.rank_static], t_static[:, self.rank_static:]
-
-        right_static = self.static_embeddings[0].weight
-        right_static = right_static[:, :self.rank_static], right_static[:, self.rank_static:]
-
-        return (
-                (lhs[0] * full_rel[0] - lhs[1] * full_rel[1]) @ to_score[0].t() +
-               (lhs[1] * full_rel[0] + lhs[0] * full_rel[1]) @ to_score[1].t()
-        ),(
-
-                   torch.sqrt(lhs[0] ** 2 + lhs[1] ** 2),
-                   torch.sqrt(full_rel[0] ** 2 + full_rel[1] ** 2),
-                   torch.sqrt(rhs[0] ** 2 + rhs[1] ** 2)
-               ), self.embeddings[2].weight[:-1] if self.no_time_emb else torch.cat((self.embeddings[2].weight[:,:self.rank],self.embeddings[2].weight[:,
-	       self.rank*3:]),dim=1)
-
-
-    def forward(self, x):
-        lhs = self.embeddings[0](x[:, 0])
-        rel = self.embeddings[1](x[:, 1])
-        rhs = self.embeddings[0](x[:, 2])
-        time = self.embeddings[2](x[:, 3] // self.time_granularity) 
-
-        lhs = lhs[:, :self.rank], lhs[:, self.rank:self.rank*2], lhs[:, self.rank*2:self.rank*3], lhs[:, self.rank*3:]
+        lhs = lhs[:, :self.rank], lhs[:, self.rank:]
+        rel_o = rel_o[:, :self.rank], rel_o[:, self.rank:]
+        rhs = rhs[:, :self.rank], rhs[:, self.rank:]
+        time_o = time_o[:, :self.rank], time_o[:, self.rank:]
+        # print(self.rank)
+        
         rel = rel[:, :self.rank], rel[:, self.rank:self.rank*2], rel[:, self.rank*2:self.rank*3], rel[:, self.rank*3:]
-        rhs = rhs[:, :self.rank], rhs[:, self.rank:self.rank*2], rhs[:, self.rank*2:self.rank*3], rhs[:, self.rank*3:]
         time = time[:, :self.rank], time[:, self.rank:self.rank*2], time[:, self.rank*2:self.rank*3], time[:, self.rank*3:]
 
-	
-	
-        # compute <h, r, T, t_conj> ==> 4**3
-        # full_rel = r * time
+
         A =   rel[0]*time[0]+ rel[1]*time[1]+ rel[2]*time[2]- rel[3]*time[3] # scalar
         B =   rel[0]*time[1]+ rel[1]*time[0]- rel[2]*time[3]+ rel[3]*time[2] # e1
         C =   rel[0]*time[2]+ rel[2]*time[0]+ rel[1]*time[3]- rel[3]*time[1]  # e2
         D =   rel[1]*time[2]- rel[2]*time[1]+ rel[0]*time[3]+ rel[3]*time[0] # e1e2
-
-        full_rel = A,B,C,D
-        
-        # h * full_rel, note that we do not change +- sign here, thus we need do that later
-        W =   lhs[0]*full_rel[0]+ lhs[1]*full_rel[1]+ lhs[2]*full_rel[2]- lhs[3]*full_rel[3] # scalar
-        X =   lhs[0]*full_rel[1]+ lhs[1]*full_rel[0]- lhs[2]*full_rel[3]+ lhs[3]*full_rel[2] # e1
-        Y =   lhs[0]*full_rel[2]+ lhs[2]*full_rel[0]+ lhs[1]*full_rel[3]- lhs[3]*full_rel[1]  # e2
-        Z =   lhs[1]*full_rel[2]- lhs[2]*full_rel[1]+ lhs[0]*full_rel[3]+ lhs[3]*full_rel[0] # e1e2
-	
-        # h_static = self.static_embeddings[0](x[:, 0])
-        # r_static = self.static_embeddings[1](x[:, 1])
-        # t_static = self.static_embeddings[0](x[:, 2])
-
-        # h_static = h_static[:, :self.rank_static], h_static[:, self.rank_static:]
-        # r_static = r_static[:, :self.rank_static], r_static[:, self.rank_static:]
-        # t_static = t_static[:, :self.rank_static], t_static[:, self.rank_static:]
-
-        right_static = self.static_embeddings[0].weight
-        right_static = right_static[:, :self.rank_static], right_static[:, self.rank_static:]
+        rt = A,B,C,D
 
         to_score = self.embeddings[0].weight
-        to_score = to_score[:, :self.rank], to_score[:, self.rank:self.rank*2], to_score[:, self.rank*2:self.rank*3], to_score[:, self.rank*3:]
+        to_score = to_score[:, :self.rank], to_score[:, self.rank:]
+        self.Mutan_MM_E = MutanLayer(self.rank, 2)
 
-
+        full_rel = rt[0] - rt[3], rt[1] + rt[2]
+        
+        rt_o = rel_o[0] * time_o[0], rel_o[1] * time_o[0], rel_o[0] * time_o[1], rel_o[1] * time_o[1]
+        full_rel_o = (rt_o[0] - rt_o[3]), (rt_o[1] + rt_o[2])
+        
         return (
-		(lhs[0] * full_rel[0] - lhs[1] * full_rel[1]) @ to_score[0].t() +
-               (lhs[1] * full_rel[0] + lhs[0] * full_rel[1]) @ to_score[1].t()
+                       (lhs[0] * full_rel[0] - lhs[1] * full_rel[1]) @ to_score[0].t() +
+                       (lhs[1] * full_rel[0] + lhs[0] * full_rel[1]) @ to_score[1].t() +
+                       (lhs[0] * full_rel_o[0] - lhs[1] * full_rel_o[1]) @ to_score[0].t() +
+                       (lhs[1] * full_rel_o[0] + lhs[0] * full_rel_o[1]) @ to_score[1].t()
                ),(
-            
-                    torch.sqrt(lhs[0] ** 2 + lhs[1] ** 2+ lhs[2] ** 2+ lhs[3] ** 2),
-                    torch.sqrt(full_rel[0] ** 2 + full_rel[1] ** 2+ full_rel[2] ** 2+ full_rel[3] ** 2),
-                    torch.sqrt(rhs[0] ** 2 + rhs[1] ** 2+ rhs[2] ** 2+ rhs[3] ** 2)
+
+                   torch.sqrt(lhs[0] ** 2 + lhs[1] ** 2),
+                   torch.sqrt(full_rel[0] ** 2 + full_rel[1] ** 2 + full_rel_o[0] ** 2 + full_rel_o[1] ** 2),
+                   torch.sqrt(rhs[0] ** 2 + rhs[1] ** 2)
+               ), self.embeddings[2].weight[:-1] if self.no_time_emb else torch.cat((self.r_t_embeddings[2].weight[:,:self.rank],self.r_t_embeddings[2].weight[:,
+	       self.rank*3:]),dim=1)
+               
+    def forward(self, x):
+        lhs = self.embeddings[0](x[:, 0])
+        rel_o = self.embeddings[1](x[:, 1])
+        time_o = self.embeddings[2](x[:, 3])
+        rel_no_time = self.embeddings[3](x[:, 1])
+        rhs = self.embeddings[0](x[:, 2])
+        
+        rel = self.r_t_embeddings[1](x[:, 1])
+        time = self.r_t_embeddings[2](x[:, 3])
+
+        lhs = lhs[:, :self.rank], lhs[:, self.rank:]
+        rel_o = rel_o[:, :self.rank], rel_o[:, self.rank:]
+        rhs = rhs[:, :self.rank], rhs[:, self.rank:]
+        time_o = time_o[:, :self.rank], time_o[:, self.rank:]
+
+
+        rnt = rel_no_time[:, :self.rank], rel_no_time[:, self.rank:]
+
+        right = self.embeddings[0].weight
+        right = right[:, :self.rank], right[:, self.rank:]
+        self.Mutan_MM_E = MutanLayer(self.rank, 2)
+        
+        rel = rel[:, :self.rank], rel[:, self.rank:self.rank*2], rel[:, self.rank*2:self.rank*3], rel[:, self.rank*3:]
+        time = time[:, :self.rank], time[:, self.rank:self.rank*2], time[:, self.rank*2:self.rank*3], time[:, self.rank*3:]
+
+
+        A =   rel[0]*time[0]+ rel[1]*time[1]+ rel[2]*time[2]- rel[3]*time[3] # scalar
+        B =   rel[0]*time[1]+ rel[1]*time[0]- rel[2]*time[3]+ rel[3]*time[2] # e1
+        C =   rel[0]*time[2]+ rel[2]*time[0]+ rel[1]*time[3]- rel[3]*time[1]  # e2
+        D =   rel[1]*time[2]- rel[2]*time[1]+ rel[0]*time[3]+ rel[3]*time[0] # e1e2
+        rt = A,B,C,D
+
+        rrt = rt[0] - rt[3], rt[1] + rt[2]
+        full_rel = rrt[0] + rnt[0], rrt[1] + rnt[1]
+       
+        
+        rt_o = rel_o[0] * time_o[0], rel_o[1] * time_o[0], rel_o[0] * time_o[1], rel_o[1] * time_o[1]
+        full_rel_o = (rt_o[0] - rt_o[3]) + rnt[0], (rt_o[1] + rt_o[2]) + rnt[1]
+        
+        to_score = self.embeddings[0].weight
+        to_score = to_score[:, :self.rank], to_score[:, self.rank:]
+
+        
+        return (
+                (lhs[0] * full_rel[0] - lhs[1] * full_rel[1])@ to_score[0].transpose(0,1)+
+                (lhs[1] * full_rel[0] + lhs[0] * full_rel[1])@ to_score[1].transpose(0,1)+
+                (lhs[0] * full_rel_o[0] - lhs[1] * full_rel_o[1])@ to_score[0].transpose(0,1)+
+                (lhs[1] * full_rel_o[0] + lhs[0] * full_rel_o[1])@ to_score[1].transpose(0,1)
+               ),(       
+                    torch.sqrt(lhs[0] ** 2 + lhs[1] ** 2),
+                    torch.sqrt(full_rel[0] ** 2 + full_rel[1] ** 2+full_rel_o[0] ** 2 + full_rel_o[1] ** 2),
+                    torch.sqrt(rhs[0] ** 2 + rhs[1] ** 2)
                ), self.embeddings[2].weight[:-1] if self.no_time_emb else self.embeddings[2].weight
 
+    
 
     def get_rhs(self, chunk_begin: int, chunk_size: int):
+        
         return self.embeddings[0].weight.data[
                chunk_begin:chunk_begin + chunk_size
                ].transpose(0, 1)
 
     def get_queries(self, queries: torch.Tensor):
         lhs = self.embeddings[0](queries[:, 0])
-        rel = self.embeddings[1](queries[:, 1])
-        time = self.embeddings[2](queries[:, 3] // self.time_granularity) 
-        lhs = lhs[:, :self.rank], lhs[:, self.rank:self.rank*2], lhs[:, self.rank*2:self.rank*3], lhs[:, self.rank*3:]
+        rel_o = self.embeddings[1](queries[:, 1])
+        time_o = self.embeddings[2](queries[:, 3])
+        rel_no_time = self.embeddings[3](queries[:, 1])
+        
+        rel = self.r_t_embeddings[1](queries[:, 1])
+        time = self.r_t_embeddings[2](queries[:, 3])
+
+        lhs = lhs[:, :self.rank], lhs[:, self.rank:]
+        rel_o = rel_o[:, :self.rank], rel_o[:, self.rank:]
+        time_o = time_o[:, :self.rank], time_o[:, self.rank:]
+        rnt = rel_no_time[:, :self.rank], rel_no_time[:, self.rank:]
+        self.Mutan_MM_E = MutanLayer(self.rank, 2)
+        
         rel = rel[:, :self.rank], rel[:, self.rank:self.rank*2], rel[:, self.rank*2:self.rank*3], rel[:, self.rank*3:]
         time = time[:, :self.rank], time[:, self.rank:self.rank*2], time[:, self.rank*2:self.rank*3], time[:, self.rank*3:]
 
-        # compute <h, r, T, t_conj> ==> 4**4 / 2 
-        # h * r
-        A =   lhs[0]*rel[0]+ lhs[1]*rel[1]+ lhs[2]*rel[2]- lhs[3]*rel[3] # scalar
-        B =   lhs[0]*rel[1]+ lhs[1]*rel[0]- lhs[2]*rel[3]+ lhs[3]*rel[2] # e1
-        C =   lhs[0]*rel[2]+ lhs[2]*rel[0]+ lhs[1]*rel[3]- lhs[3]*rel[1]  # e2
-        D =   lhs[1]*rel[2]- lhs[2]*rel[1]+ lhs[0]*rel[3]+ lhs[3]*rel[0] # e1e2
-        # (h*r) * time, note that we first change the +- sign for easier dot product later
-        W =   A * time[0]+ B * time[1]+ C * time[2]- D * time[3] # scalar
-        X = - A * time[1]- B * time[0]+ C * time[3]- D * time[2] # e1
-        Y = - A * time[2]- C * time[0]- B * time[3]+ D * time[1] # e2
-        Z =   B * time[2]- C * time[1]+ A * time[3]+ D * time[0] # e1e2
 
-        full_rel = A,B,C,D
-    
-        return torch.cat([
-            lhs[0] * full_rel[0] - lhs[1] * full_rel[1],
-            lhs[1] * full_rel[0] + lhs[0] * full_rel[1]
-        ], 1)
-
-    def get_lhs_queries(self, queries: torch.Tensor):
-        rhs = self.embeddings[0](queries[:, 2])
-        rel = self.embeddings[1](queries[:, 1])
-        time = self.embeddings[2](queries[:, 3] // self.time_granularity)
-	
-        rel = rel[:, :self.rank], rel[:, self.rank:self.rank*2], rel[:, self.rank*2:self.rank*3], rel[:, self.rank*3:]
-        rhs = rhs[:, :self.rank], rhs[:, self.rank:self.rank*2], rhs[:, self.rank*2:self.rank*3], rhs[:, self.rank*3:]
-        time = time[:, :self.rank], time[:, self.rank:self.rank*2], time[:, self.rank*2:self.rank*3], time[:, self.rank*3:]
-	
-        # compute <h, r, T, t_conj> ==> 4**3
-        # full_rel = r * time
         A =   rel[0]*time[0]+ rel[1]*time[1]+ rel[2]*time[2]- rel[3]*time[3] # scalar
         B =   rel[0]*time[1]+ rel[1]*time[0]- rel[2]*time[3]+ rel[3]*time[2] # e1
         C =   rel[0]*time[2]+ rel[2]*time[0]+ rel[1]*time[3]- rel[3]*time[1]  # e2
         D =   rel[1]*time[2]- rel[2]*time[1]+ rel[0]*time[3]+ rel[3]*time[0] # e1e2
+        rt = A,B,C,D
 
-        full_rel = A,B,C,D
-        
-        # h * full_rel
-	
-        W1 =  full_rel[0]*rhs[0]- full_rel[1]*rhs[1]- full_rel[2]*rhs[2]+ full_rel[3]*rhs[3]
-        X1 =  full_rel[1]*rhs[0]- full_rel[0]*rhs[1]- full_rel[3]*rhs[2]+ full_rel[2]*rhs[3]
-        Y1 =  full_rel[2]*rhs[0]+ full_rel[3]*rhs[1]- full_rel[0]*rhs[2]- full_rel[1]*rhs[3]
-        Z1 =- full_rel[3]*rhs[0]- full_rel[2]*rhs[1]+ full_rel[1]*rhs[2]+ full_rel[0]*rhs[3]
+        full_rel = (rt[0] - rt[3]) + rnt[0], (rt[1] + rt[2]) + rnt[1]
+
+        rt_o = rel_o[0] * time_o[0], rel_o[1] * time_o[0], rel_o[0] * time_o[1], rel_o[1] * time_o[1]
+        full_rel_o = (rt_o[0] - rt_o[3]) + rnt[0], (rt_o[1] + rt_o[2]) + rnt[1]
 
         return torch.cat([
-            rhs[0] * full_rel[0] - rhs[1] * full_rel[1],
-            rhs[1] * full_rel[0] + rhs[0] * full_rel[1]
+            lhs[0] * full_rel[0] - lhs[1] * full_rel[1],
+            lhs[1] * full_rel[0] + lhs[0] * full_rel[1]
+        ], 1)+torch.cat([
+            lhs[0] * full_rel_o[0] - lhs[1] * full_rel_o[1],
+            lhs[1] * full_rel_o[0] + lhs[0] * full_rel_o[1]
         ], 1)
+
