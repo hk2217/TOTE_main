@@ -3,17 +3,17 @@ from typing import Dict
 import logging
 import torch
 from torch import optim
-# import matplotlib.pyplot as plt
+import matplotlib.pyplot as plt
 
 from datasets import TemporalDataset
 from optimizers import TKBCOptimizer
-from models import TOTE
+from models import TeMME
 from regularizers import N3, Lambda3, Linear3
 import os
 
 
 parser = argparse.ArgumentParser(
-    description="TOTE"
+    description="TeMME"
 )
 parser.add_argument(
     '--dataset', type=str,
@@ -21,7 +21,7 @@ parser.add_argument(
 )
 
 parser.add_argument(
-    '--model', default='TOTE', type=str,
+    '--model', default='TeMME', type=str,
     help="Model Name"
 )
 parser.add_argument(
@@ -97,7 +97,7 @@ def learn(model=args.model,
     
     sizes = dataset.get_shape()
     model = {
-        'TOTE': TOTE(sizes, rank, no_time_emb=args.no_time_emb, time_granularity=time_granularity)
+        'TeMME': TeMME(sizes, rank, no_time_emb=args.no_time_emb, time_granularity=time_granularity)
     }[model]
     model = model.cuda()
 
