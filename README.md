@@ -29,7 +29,7 @@ python process_timegran.py --tr 1 --dataset wikidata12k
 
 This will create the files required to compute the filtered metrics.
 
-## Reproducing results of TeLM
+## Reproducing results of TeMME
 
 In order to reproduce the results of TeMME on the four datasets in the paper, go to the tkbc/ folder and run the following commands
 
@@ -47,5 +47,5 @@ python learner.py --dataset wikidata12k --model TeLM --rank 2000 --emb_reg 0.025
 
 ## Acknowledgement
 
-We refer to the code of TeLM. Thanks for their great contributions!
+We refer to the code of TeMME. Thanks for their great contributions!
 
